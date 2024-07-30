@@ -1,4 +1,4 @@
-# Cell
+
 import math
 import torch
 from torch import autograd
@@ -93,7 +93,7 @@ class MaskedBertModel(MaskedBertPreTrainedModel):
         self.config = config
 
         self.embeddings = BertEmbeddings(config)
-        self.embeddings.requires_grad_(requires_grad=False)#####freeze
+        self.embeddings.requires_grad_(requires_grad=False)
         self.encoder = BertEncoder(config)
         self.pooler = BertPooler(config)
 
@@ -306,7 +306,8 @@ class BertEncoder(nn.Module):
             outputs = outputs + (all_attentions,)
         return outputs  # last-layer hidden state, (all hidden states), (all attentions)
 
-# add head_mask_score
+
+# Cell
 class MaskedBertForQuestionAnswering(MaskedBertPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
@@ -314,19 +315,6 @@ class MaskedBertForQuestionAnswering(MaskedBertPreTrainedModel):
         self.bert = MaskedBertModel(config)
         self.qa_outputs = nn.Linear(config.hidden_size, config.num_labels)
         self.init_weights()
-    
-        # Define multiple head_masks
-        self.head_mask_score = nn.ParameterList([
-            nn.Parameter(torch.ones(config.num_hidden_layers, config.num_attention_heads), requires_grad=True),
-            nn.Parameter(torch.ones(config.num_hidden_layers, config.num_attention_heads), requires_grad=True)
-        ])
-
-        # Gate for selecting head_mask
-        self.gate_head = nn.Sequential(
-            nn.Linear(config.hidden_size, config.hidden_size),
-            nn.ReLU(),
-            nn.Linear(config.hidden_size, len(self.head_mask_score))
-        )
 
     def forward(
         self,
@@ -339,28 +327,7 @@ class MaskedBertForQuestionAnswering(MaskedBertPreTrainedModel):
         start_positions=None,
         end_positions=None,
         threshold=None,
-    ):  
-        if head_mask is None:
-            # Generate the corresponding binary masks
-            masks = [TopKBinarizer.apply(mask_score, threshold) for mask_score in self.head_mask_score]
-
-            # Compute input representation (e.g., mean of input embeddings)
-            input_repr = self.bert.embeddings(input_ids).mean(dim=1)
-
-            # Compute gate scores and probabilities
-            gate_scores = self.gate_head(input_repr)
-            gate_probs = F.softmax(gate_scores, dim=-1)
-
-            # Select the head_mask with the highest probability
-            selected_mask_index = torch.argmax(gate_probs, dim=-1)#####dim=-1or1
-            head_mask = masks[selected_mask_index[0]]####### to change
-
-            # Expand head_mask to match the required dimensions
-            if head_mask.dim() == 1:
-                head_mask = head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
-                head_mask = head_mask.expand(self.config.num_hidden_layers, -1, -1, -1, -1)
-            elif head_mask.dim() == 2:
-                head_mask = head_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
+    ):
 
         outputs = self.bert(
             input_ids,
@@ -466,7 +433,7 @@ class BertAttention(nn.Module):
         outputs = (attention_output,) + self_outputs[1:]  # add attentions if we output them
         return outputs
 
-# Cell
+# we can add head_mask here
 class BertSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -481,12 +448,12 @@ class BertSelfAttention(nn.Module):
         self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
         
+        ##  not mask q,k,v 
         self.query = nn.Linear(config.hidden_size, self.all_head_size)
         self.key = nn.Linear(config.hidden_size, self.all_head_size)
         self.value = nn.Linear(config.hidden_size, self.all_head_size)
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
-        self.attn_dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def transpose_for_scores(self, x):
         new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
@@ -503,7 +470,7 @@ class BertSelfAttention(nn.Module):
         threshold=None,
     ):
         mixed_query_layer = self.query(hidden_states)
-        
+
         if encoder_hidden_states is not None:
             mixed_key_layer = self.key(encoder_hidden_states)
             mixed_value_layer = self.value(encoder_hidden_states)
@@ -524,7 +491,7 @@ class BertSelfAttention(nn.Module):
 
         attention_probs = nn.Softmax(dim=-1)(attention_scores)
         attention_probs = self.dropout(attention_probs)
-
+        
         # Mask heads if we want to
         if head_mask is not None:
             attention_probs = attention_probs * head_mask
@@ -538,12 +505,8 @@ class BertSelfAttention(nn.Module):
         outputs = (context_layer, attention_probs) if self.output_attentions else (context_layer,)
         return outputs
 
-##### change this to MoE
+##### MoE for linear layer: intermediate
 class MaskedLinear(nn.Linear):
-    """
-    Fully Connected layer with on the fly adaptive mask.
-    If needed, a score matrix is created to store the importance of each associated weight.
-    """
 
     def __init__(
         self,
@@ -556,7 +519,6 @@ class MaskedLinear(nn.Linear):
     ):
       
         super(MaskedLinear, self).__init__(in_features=in_features, out_features=out_features, bias=bias)
-        assert pruning_method in ["topK"]
         self.pruning_method = pruning_method
         self.mask_scale = mask_scale
         self.mask_init = mask_init
@@ -564,47 +526,37 @@ class MaskedLinear(nn.Linear):
         # Initialize two mask scores
         self.mask_scores_1 = nn.Parameter(torch.Tensor(self.weight.size()))
         self.mask_scores_2 = nn.Parameter(torch.Tensor(self.weight.size()))
+        self.num_masks = 2
         self.init_mask()
 
-        # Gate for selecting mask: small two-layer fully connected network
-        self.gate_lin = nn.Sequential(
-            nn.Linear(in_features, in_features),
-            nn.ReLU(),
-            nn.Linear(in_features, 2)
-        )
-
+        # Gate for selecting mask
+        self.gate_lin = nn.Linear(in_features, 2)
+    
     def init_mask(self):
         if self.mask_init == "constant":
             init.constant_(self.mask_scores_1, val=self.mask_scale)
             init.constant_(self.mask_scores_2, val=self.mask_scale)
+        elif self.mask_init == "uniform":
+            init.uniform_(self.mask_scores_1, a=-self.mask_scale, b=self.mask_scale)
+            init.uniform_(self.mask_scores_2, a=-self.mask_scale, b=self.mask_scale)
 
     def forward(self, input: torch.tensor, threshold: float):
-        # Get the mask
-        if self.pruning_method == "topK":
-            mask1 = TopKBinarizer.apply(self.mask_scores_1, threshold)
-            mask2 = TopKBinarizer.apply(self.mask_scores_2, threshold)
-        
+        # mask
+        mask1 = TopKBinarizer.apply(self.mask_scores_1, threshold)
+        mask2 = TopKBinarizer.apply(self.mask_scores_2, threshold)
+        concat_mask = torch.cat((mask1.unsqueeze(0), mask2.unsqueeze(0)), dim=0) 
+        masked_weight = (self.weight.unsqueeze(0).repeat(self.num_masks, 1, 1) * concat_mask) 
+
         # Compute the gate scores
-        gate_scores = self.gate_lin(input.mean(dim=1))  # Using mean of input as a simple representation
-        gate_probs = F.softmax(gate_scores, dim=-1)
-
-        # Select the mask with the highest probability
-        selected_mask_index = torch.argmax(gate_probs, dim=1)
-
-        # Determine the most frequent index
-        most_frequent_index = torch.argmax(torch.bincount(selected_mask_index))
-
-        if most_frequent_index == 0:
-            selected_mask = mask1
-        else:
-            selected_mask = mask2
+        gate_scores = self.gate_lin(input)
+        selected_mask_index = torch.argmax(gate_scores, dim=-1)
+        selected_masked_weight = masked_weight[selected_mask_index]
+    
+        # Perform the masked weight multiplication using batch matrix multiplication
+        output = torch.einsum('bsi,bsoi->bso', input, selected_masked_weight)
         
-         # Mask weights with computed mask
-        weight_thresholded = selected_mask * self.weight
-
-        # Compute output (linear layer) with masked weights
-        return F.linear(input, weight_thresholded, self.bias)
-
+        return output
+    
 
 # Cell
 class BertSelfOutput(nn.Module):
@@ -612,14 +564,14 @@ class BertSelfOutput(nn.Module):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+#         self.LayerNorm = BertLayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, hidden_states, input_tensor, threshold=None):
+    def forward(self, hidden_states, input_tensor, threshold):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
         return hidden_states
-
 
 # Cell
 class BertIntermediate(nn.Module):
@@ -648,14 +600,14 @@ class BertOutput(nn.Module):
         super().__init__()
         self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+#         self.LayerNorm = BertLayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, hidden_states, input_tensor, threshold=None):
+    def forward(self, hidden_states, input_tensor, threshold):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
         return hidden_states
-
 
 # Cell
 class BertPooler(nn.Module):
@@ -679,7 +631,6 @@ class TopKBinarizer(autograd.Function):
     Computes a binary mask M from a real value matrix S such that `M_{i,j} = 1` if and only if `S_{i,j}`
     is among the k% highest values of S.
     """
-
     @staticmethod
     def forward(ctx, inputs: torch.tensor, threshold: float):
         # Get the subnetwork by sorting the inputs and using the top threshold %
