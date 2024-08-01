@@ -447,27 +447,9 @@ class BertSelfAttention(nn.Module):
         self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
-        self.query = MaskedLinear(
-            config.hidden_size,
-            self.all_head_size,
-            pruning_method=config.pruning_method,
-            mask_init=config.mask_init,
-            mask_scale=config.mask_scale,
-        )
-        self.key = MaskedLinear(
-            config.hidden_size,
-            self.all_head_size,
-            pruning_method=config.pruning_method,
-            mask_init=config.mask_init,
-            mask_scale=config.mask_scale,
-        )
-        self.value = MaskedLinear(
-            config.hidden_size,
-            self.all_head_size,
-            pruning_method=config.pruning_method,
-            mask_init=config.mask_init,
-            mask_scale=config.mask_scale,
-        )
+        self.query = nn.Linear(config.hidden_size, self.all_head_size)
+        self.key = nn.Linear(config.hidden_size, self.all_head_size)
+        self.value = nn.Linear(config.hidden_size, self.all_head_size)
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
@@ -485,15 +467,15 @@ class BertSelfAttention(nn.Module):
         encoder_attention_mask=None,
         threshold=None,
     ):
-        mixed_query_layer = self.query(hidden_states, threshold=threshold)
+        mixed_query_layer = self.query(hidden_states)
 
         if encoder_hidden_states is not None:
-            mixed_key_layer = self.key(encoder_hidden_states, threshold=threshold)
-            mixed_value_layer = self.value(encoder_hidden_states, threshold=threshold)
+            mixed_key_layer = self.key(encoder_hidden_states)
+            mixed_value_layer = self.value(encoder_hidden_states)
             attention_mask = encoder_attention_mask
         else:
-            mixed_key_layer = self.key(hidden_states, threshold=threshold)
-            mixed_value_layer = self.value(hidden_states, threshold=threshold)
+            mixed_key_layer = self.key(hidden_states)
+            mixed_value_layer = self.value(hidden_states)
 
         query_layer = self.transpose_for_scores(mixed_query_layer)
         key_layer = self.transpose_for_scores(mixed_key_layer)
@@ -546,7 +528,7 @@ class MaskedLinear(nn.Linear):
         self.mask_scores_1 = nn.Parameter(torch.randn(self.weight.size()))
         self.mask_scores_2 = nn.Parameter(torch.randn(self.weight.size()))
         
-        self.num_masks = 2
+        self.num_masks = 1
         #self.init_mask()
 
         self.gate_lin = nn.Sequential(
