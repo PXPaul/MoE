@@ -528,7 +528,7 @@ class MaskedLinear(nn.Linear):
         self.mask_scores_1 = nn.Parameter(torch.randn(self.weight.size()))
         self.mask_scores_2 = nn.Parameter(torch.randn(self.weight.size()))
         
-        self.num_masks = 1
+        self.num_masks = 2
         #self.init_mask()
 
         self.gate_lin = nn.Sequential(
